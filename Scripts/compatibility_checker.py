@@ -1,0 +1,434 @@
+from Scripts.datasets import gpu_data
+from Scripts.datasets import os_data
+from Scripts.datasets import pci_data
+from Scripts.datasets import codec_layouts
+from Scripts import utils
+import time
+
+class CompatibilityChecker:
+    def __init__(self):
+        self.utils = utils.Utils()
+
+    def _widest_compatibility(self, compatibilities):
+        compatibilities = [
+            compatibility for compatibility in compatibilities
+            if compatibility and compatibility != (None, None)
+        ]
+
+        if not compatibilities:
+            return (None, None)
+
+        return (
+            max(compatibilities, key=lambda compatibility: self.utils.parse_darwin_version(compatibility[0]))[0],
+            min(compatibilities, key=lambda compatibility: self.utils.parse_darwin_version(compatibility[1]))[1]
+        )
+
+    def _restrict_native_compatibility(self, compatibility):
+        max_version, min_version = compatibility
+
+        if max_version is None:
+            return
+
+        if self.utils.parse_darwin_version(max_version) < self.utils.parse_darwin_version(self.max_native_macos_version):
+            self.max_native_macos_version = max_version
+
+        if self.utils.parse_darwin_version(min_version) > self.utils.parse_darwin_version(self.min_native_macos_version):
+            self.min_native_macos_version = min_version
+
+    def show_macos_compatibility(self, device_compatibility):
+        if not device_compatibility:
+            return "\033[90m未检查\033[0m"
+        
+        if not device_compatibility[0]:
+            return "\033[0;31m不支持\033[0m"
+        
+        max_compatibility = self.utils.parse_darwin_version(device_compatibility[0])[0]
+        min_compatibility = self.utils.parse_darwin_version(device_compatibility[-1])[0]
+        max_version = self.utils.parse_darwin_version(os_data.get_latest_darwin_version())[0]
+        min_version = self.utils.parse_darwin_version(os_data.get_lowest_darwin_version())[0]
+
+        if max_compatibility == min_version:
+            return "\033[1;36m最高支持到 {}\033[0m".format(
+                os_data.get_macos_name_by_darwin(device_compatibility[-1])
+            )
+
+        if min_version < min_compatibility or max_compatibility < max_version:
+            return "\033[1;32m{} 到 {}\033[0m".format(
+                os_data.get_macos_name_by_darwin(device_compatibility[-1]), 
+                os_data.get_macos_name_by_darwin(device_compatibility[0])
+            )
+        
+        return "\033[1;36m最高到 {}\033[0m".format(
+            os_data.get_macos_name_by_darwin(device_compatibility[0])
+        )
+        
+    def is_low_end_intel_cpu(self, processor_name):
+        return any(cpu_branding in processor_name for cpu_branding in ("Celeron", "Pentium"))
+
+    def check_cpu_compatibility(self):
+        max_version = os_data.get_latest_darwin_version()
+        min_version = os_data.get_lowest_darwin_version()
+
+        if "SSE4" not in self.hardware_report.get("CPU").get("SIMD Features"):
+            max_version = min_version = None
+        else:
+            if "SSE4.2" not in self.hardware_report.get("CPU").get("SIMD Features"):
+                min_version = "18.0.0"
+                if "SSE4.1" in self.hardware_report.get("CPU").get("SIMD Features"):
+                    max_version = "21.99.99"
+
+        self.hardware_report["CPU"]["Compatibility"] = (max_version, min_version)
+        
+        print("{}- {}: {}".format(" "*3, self.hardware_report.get("CPU").get("Processor Name"), self.show_macos_compatibility(self.hardware_report["CPU"].get("Compatibility"))))
+
+        if max_version == min_version and max_version == None:
+            print("")
+            print("缺少必需的 SSE4.x 指令集。")
+            print("您的 CPU 不支持 Sierra (10.12) 之后更新的 macOS 版本。")
+            print("")
+            self.utils.request_input()
+            self.utils.exit_program()
+
+        self.max_native_macos_version = max_version
+        self.min_native_macos_version = min_version
+
+    def check_gpu_compatibility(self):
+        if not self.hardware_report.get("GPU"):
+            print("")
+            print("未找到 GPU!")
+            print("请确保导出的硬件报告包含 GPU 信息")
+            print("然后重试。")
+            print("")
+            self.utils.request_input()
+            self.utils.exit_program()
+
+        for gpu_name, gpu_props in self.hardware_report["GPU"].items():
+            gpu_manufacturer = gpu_props.get("Manufacturer")
+            gpu_codename = gpu_props.get("Codename")
+            device_id = gpu_props.get("Device ID")[5:]
+
+            max_version = os_data.get_latest_darwin_version()
+            min_version = os_data.get_lowest_darwin_version()
+            ocl_patched_max_version = os_data.get_latest_darwin_version(include_beta=False)
+            ocl_patched_min_version = "20.0.0"
+            navi_requires_developer_mode = False
+
+            if "Intel" in gpu_manufacturer:
+                if device_id.startswith(("0042", "0046")) and self.hardware_report.get("Motherboard").get("Platform") != "Desktop":
+                    max_version = "17.99.99"
+                elif device_id.startswith("01") and not device_id[-2] in ("5", "6") and not device_id in ("0102", "0106", "010A"):
+                    max_version = "17.99.99"
+                elif device_id.startswith("01") and not device_id in ("0152", "0156"):
+                    max_version = "20.99.99"
+                elif device_id.startswith(("04", "0A", "0C", "0D", "0B", "16")):
+                    max_version = "21.99.99"
+                elif device_id.startswith(("09", "19", "59", "3E", "87", "9B")) and not device_id in ("3E90", "3E93", "3E99", "3E9C", "3EA1", "3EA4", "9B21", "9BA0", "9BA2", "9BA4", "9BA5", "9BA8", "9BAA", "9BAB", "9BAC"):
+                    pass
+                elif device_id.startswith("8A"):
+                    min_version = "19.4.0"
+                else:
+                    max_version = min_version = None
+
+                if self.is_low_end_intel_cpu(self.hardware_report.get("CPU").get("Processor Name")):
+                    max_version = min_version = None
+            elif "AMD" in gpu_manufacturer:
+                if "Navi 2" in gpu_codename:
+                    if not "AVX2" in self.hardware_report.get("CPU").get("SIMD Features"):
+                        max_version = "21.99.99"
+                        ocl_patched_min_version = "22.0.0"
+                        navi_requires_developer_mode = True
+                    else:
+                        if gpu_codename in ("Navi 23", "Navi 22"):
+                            min_version = "21.2.0"
+                        elif "Navi 21" in gpu_codename:
+                            min_version = "20.5.0"
+                        else:
+                            max_version = min_version = None
+                elif "Navi 1" in gpu_codename:
+                    if not "AVX2" in self.hardware_report.get("CPU").get("SIMD Features"):
+                        max_version = "21.99.99"
+                        ocl_patched_min_version = "22.0.0"
+                        navi_requires_developer_mode = True
+                    min_version = "19.0.0"
+                elif "Vega 20" in gpu_codename:
+                    if not "AVX2" in self.hardware_report.get("CPU").get("SIMD Features"):
+                        max_version = "21.99.99"
+                        ocl_patched_min_version = "22.0.0"
+                    min_version = "18.6.0"
+                elif gpu_codename in ("Vega 10", "Polaris 22", "Polaris 20", "Baffin", "Ellesmere") or device_id in ("6995", "699F"):
+                    if not "AVX2" in self.hardware_report.get("CPU").get("SIMD Features"):
+                        max_version = "21.99.99"
+                        ocl_patched_min_version = "22.0.0"
+                    min_version = "17.0.0"
+                elif self.utils.contains_any(gpu_data.AMDCodenames, gpu_codename):
+                    max_version = "21.99.99"
+                elif device_id in ("15D8", "15DD", "15E7", "1636", "1638", "164C"):
+                    min_version = "19.0.0"
+                else:
+                    max_version = min_version = None
+            elif "NVIDIA" in gpu_manufacturer:
+                if "Kepler" in gpu_codename:
+                    max_version = "20.99.99"
+                elif gpu_codename in ("Pascal", "Maxwell", "Fermi", "Tesla"):
+                    max_version = "17.99.99"
+                    min_version = "17.0.0"
+                else:
+                    max_version = min_version = None
+
+            if (max_version == min_version and max_version == None) or \
+                ( "Intel" in gpu_manufacturer and device_id.startswith(("01", "04", "0A", "0C", "0D")) and \
+                  all(monitor_info.get("Connector Type") == "VGA" and monitor_info.get("Connected GPU", gpu_name) == gpu_name for monitor_name, monitor_info in self.hardware_report.get("Monitor", {}).items())):
+                gpu_props["Compatibility"] = (None, None)
+            else:
+                gpu_props["Compatibility"] = (max_version, min_version)
+                if self.utils.parse_darwin_version(max_version) < self.utils.parse_darwin_version(ocl_patched_max_version):
+                    gpu_props["OCLP Compatibility"] = (ocl_patched_max_version, ocl_patched_min_version if self.utils.parse_darwin_version(ocl_patched_min_version) > self.utils.parse_darwin_version("{}.{}.{}".format(int(max_version[:2]) + 1, 0, 0)) else "{}.{}.{}".format(int(max_version[:2]) + 1, 0, 0))
+
+            print("{}- {}: {}".format(" "*3, gpu_name, self.show_macos_compatibility(gpu_props.get("Compatibility"))))
+
+            if "OCLP Compatibility" in gpu_props:
+                print("{}- OCLP 兼容性{}: {}".format(" "*6, "（需要开发者模式）" if navi_requires_developer_mode else "", self.show_macos_compatibility(gpu_props.get("OCLP Compatibility"))))
+            connected_monitors = []
+            for monitor_name, monitor_info in self.hardware_report.get("Monitor", {}).items(): 
+                if monitor_info.get("Connected GPU") == gpu_name:
+                    connected_monitors.append("{} ({})".format(monitor_name, monitor_info.get("Connector Type")))
+                    if "Intel" in gpu_manufacturer and device_id.startswith(("01", "04", "0A", "0C", "0D")):
+                        if monitor_info.get("Connector Type") == "VGA":
+                            connected_monitors[-1] = "\033[0;31m{}{}\033[0m".format(connected_monitors[-1][:-1], ", 不受支持)")
+            if connected_monitors:
+                print("{}- 已连接显示器{}: {}".format(" "*6, "台" if len(connected_monitors) > 1 else "", ", ".join(connected_monitors)))
+
+        for gpu_name, gpu_props in self.hardware_report.get("GPU").items():
+            if gpu_props.get("Compatibility") != (None, None):
+                if all(other_gpu_props.get("Compatibility") == (None, None) for other_gpu_props in self.hardware_report.get("GPU").values() if other_gpu_props != gpu_props):
+                    pass
+                elif any(monitor_info.get("Connected GPU", gpu_name) != gpu_name for monitor_info in self.hardware_report.get("Monitor", {}).values() if monitor_info.get("Connector Type") == "Internal"):
+                    gpu_props["Compatibility"] = (None, None)
+                    if gpu_props.get("OCLP Compatibility"):
+                        del gpu_props["OCLP Compatibility"]
+
+            if gpu_props.get("OCLP Compatibility"):
+                self.ocl_patched_macos_version = (gpu_props.get("OCLP Compatibility")[0], self.ocl_patched_macos_version[-1] if self.ocl_patched_macos_version and self.utils.parse_darwin_version(self.ocl_patched_macos_version[-1]) < self.utils.parse_darwin_version(gpu_props.get("OCLP Compatibility")[-1]) else gpu_props.get("OCLP Compatibility")[-1])
+
+        gpu_compatibility = self._widest_compatibility(
+            gpu_props.get("Compatibility")
+            for gpu_props in self.hardware_report.get("GPU").values()
+        )
+        
+        if gpu_compatibility == (None, None):
+            print("")
+            print("没有受支持的 GPU，无法安装 macOS。")
+            print("请不要再就这个问题向我的收件箱或 issue 跟踪器发送垃圾信息!")
+            print("")
+            self.utils.request_input()
+            self.utils.exit_program()
+
+        self._restrict_native_compatibility(gpu_compatibility)
+
+    def check_sound_compatibility(self):
+        for audio_device, audio_props in self.hardware_report.get("Sound", {}).items():
+            codec_id = audio_props.get("Device ID")
+
+            max_version = min_version = None
+
+            if "USB" in audio_props.get("Bus Type") or \
+                codec_id.startswith("1002") or \
+                codec_id.startswith("8086") and not codec_id in pci_data.IntelSSTIDs or \
+                codec_id in codec_layouts.data:
+                max_version, min_version = os_data.get_latest_darwin_version(), os_data.get_lowest_darwin_version()
+
+            audio_props["Compatibility"] = (max_version, min_version)
+
+            print("{}- {}: {}".format(" "*3, audio_device, self.show_macos_compatibility(audio_props.get("Compatibility"))))
+
+            audio_endpoints = audio_props.get("Audio Endpoints")
+            if audio_endpoints:
+                print("{}- 音频端点{}: {}".format(" "*6, "个" if len(audio_endpoints) > 1 else "", ", ".join(audio_endpoints)))
+        
+    def check_biometric_compatibility(self):
+        print("   \033[1;93m注意:\033[0m macOS 的生物识别认证需要 Apple T2 芯片，")
+        print("     黑苹果系统无法使用该功能。")
+        print("")
+        for biometric_device, biometric_props in self.hardware_report.get("Biometric", {}).items():
+            biometric_props["Compatibility"] = (None, None)
+            print("{}- {}: {}".format(" "*3, biometric_device, self.show_macos_compatibility(biometric_props.get("Compatibility"))))
+
+    def check_network_compatibility(self):
+        for device_name, device_props in self.hardware_report.get("Network", {}).items():
+            bus_type = device_props.get("Bus Type")
+            device_id = device_props.get("Device ID")
+            
+            max_version = os_data.get_latest_darwin_version()
+            min_version = os_data.get_lowest_darwin_version()
+            ocl_patched_max_version = os_data.get_latest_darwin_version(include_beta=False)
+            ocl_patched_min_version = "20.0.0"
+
+            if device_id in pci_data.BroadcomWiFiIDs:
+                device_index = pci_data.BroadcomWiFiIDs.index(device_id)
+
+                if device_index == 13 or 17 < device_index < 21:
+                    max_version = "22.99.99"
+                    ocl_patched_min_version = "23.0.0"
+                elif device_index < 12:
+                    max_version = "17.99.99"
+            elif device_id in pci_data.AtherosWiFiIDs[:8]:
+                max_version = "17.99.99"
+            elif device_id in pci_data.AtherosWiFiIDs[8:]:
+                max_version = "20.99.99"
+            elif device_id in pci_data.IntelI22XIDs:
+                min_version = "19.0.0"
+            elif device_id in pci_data.AquantiaAqtionIDs:
+                min_version = "21.0.0"
+
+            if device_id in set(pci_data.EthernetIDs) | set(pci_data.WirelessUSBIDs):
+                device_props["Compatibility"] = (max_version, min_version)
+            elif device_id in pci_data.WirelessCardIDs:
+                if not device_id in pci_data.IntelWiFiIDs and not device_id in pci_data.AtherosWiFiIDs[8:] and not device_id in pci_data.rtw88WiFiIDs:
+                    device_props["OCLP Compatibility"] = (ocl_patched_max_version, ocl_patched_min_version)
+                    self.ocl_patched_macos_version = (ocl_patched_max_version, self.ocl_patched_macos_version[-1] if self.ocl_patched_macos_version and self.utils.parse_darwin_version(self.ocl_patched_macos_version[-1]) < self.utils.parse_darwin_version(device_props.get("OCLP Compatibility")[-1]) else device_props.get("OCLP Compatibility")[-1])
+                device_props["Compatibility"] = (max_version, min_version)
+
+            if bus_type.startswith("PCI") and not device_props.get("Compatibility"):
+                device_props["Compatibility"] = (None, None)
+
+            print("{}- {}: {}".format(" "*3, device_name, self.show_macos_compatibility(device_props.get("Compatibility"))))
+
+            if device_id in pci_data.WirelessCardIDs:
+                if device_id in pci_data.BroadcomWiFiIDs:
+                    print("{}- 连续互通支持: \033[1;32m完整\033[0m (AirDrop、接力、通用剪贴板、即时热点等)".format(" "*6))
+                elif device_id in pci_data.IntelWiFiIDs:
+                    print("{}- 连续互通支持: \033[1;33m部分\033[0m (使用 AirportItlwm 支持接力和通用剪贴板)".format(" "*6))
+                    print("{}\033[1;93m注意:\033[0m AirDrop、通用剪贴板、即时热点等不可用".format(" "*6))
+                elif device_id in pci_data.AtherosWiFiIDs:
+                    print("{}- 连续互通支持: \033[1;31m有限\033[0m (无连续互通功能)".format(" "*6))
+                    print("{}\033[1;93m注意:\033[0m 不建议在 macOS 中使用 Atheros 网卡".format(" "*6))
+
+            if "OCLP Compatibility" in device_props:
+                print("{}- OCLP 兼容性: {}".format(" "*6, self.show_macos_compatibility(device_props.get("OCLP Compatibility"))))
+
+    def check_storage_compatibility(self):
+        if not self.hardware_report.get("Storage Controllers"):
+            print("")
+            print("未找到存储控制器!")
+            print("请确保导出的硬件报告包含存储控制器信息")
+            print("然后重试。")
+            print("")
+            self.utils.request_input()
+            self.utils.exit_program()
+
+        storage_controllers = {
+            controller_name: controller_props
+            for controller_name, controller_props in self.hardware_report["Storage Controllers"].items()
+            if controller_props.get("Bus Type") == "PCI" and controller_props.get("Disk Drives")
+        }
+
+        for controller_name, controller_props in storage_controllers.items():
+
+            device_id = controller_props.get("Device ID")
+            subsystem_id = controller_props.get("Subsystem ID", "0"*8)
+
+            max_version = os_data.get_latest_darwin_version()
+            min_version = os_data.get_lowest_darwin_version()
+
+            if device_id in pci_data.IntelVMDIDs:
+                print("")
+                print("macOS 不支持 Intel VMD 控制器。")
+                print("请在 BIOS 设置中禁用 Intel VMD，并使用新的硬件报告重试。")
+                print("")
+                self.utils.request_input()
+                self.utils.exit_program()
+
+            unsupported_subsystem_ids = pci_data.UnsupportedNVMeSSDIDs.get(device_id)
+            if unsupported_subsystem_ids and subsystem_id in unsupported_subsystem_ids:
+                max_version = min_version = None
+            elif device_id == "1C5C-174A":
+                min_version = "20.0.0"
+
+            controller_props["Compatibility"] = (max_version, min_version)
+                
+            print("{}- {}: {}".format(" "*3, controller_name, self.show_macos_compatibility(controller_props.get("Compatibility"))))
+
+        storage_compatibility = self._widest_compatibility(
+            controller_props.get("Compatibility")
+            for controller_props in storage_controllers.values()
+        )
+
+        if storage_controllers and storage_compatibility == (None, None):
+            print("")
+            print("未找到与 macOS 兼容的存储控制器!")
+            print("可以考虑为系统购买兼容的 NVMe SSD。")
+            print("为了获得良好的 macOS 兼容性，通常推荐西部数据的 NVMe SSD。")
+            print("")
+            self.utils.request_input()
+            self.utils.exit_program()
+
+        if storage_controllers:
+            self._restrict_native_compatibility(storage_compatibility)
+
+    def check_bluetooth_compatibility(self):
+        for bluetooth_name, bluetooth_props in self.hardware_report.get("Bluetooth", {}).items():
+            device_id = bluetooth_props.get("Device ID")
+            
+            max_version = os_data.get_latest_darwin_version()
+            min_version = os_data.get_lowest_darwin_version()
+
+            if device_id in pci_data.AtherosBluetoothIDs:
+                max_version = "20.99.99"
+            elif device_id in pci_data.BluetoothIDs:
+                pass
+            else:
+                max_version = min_version = None
+
+            bluetooth_props["Compatibility"] = (max_version, min_version)
+
+            print("{}- {}: {}".format(" "*3, bluetooth_name, self.show_macos_compatibility(bluetooth_props.get("Compatibility"))))
+        
+    def check_sd_controller_compatibility(self):
+        for controller_name, controller_props in self.hardware_report.get("SD Controller", {}).items():
+            device_id = controller_props.get("Device ID")
+
+            max_version = os_data.get_latest_darwin_version()
+            min_version = os_data.get_lowest_darwin_version()
+
+            if device_id in pci_data.RealtekCardReaderIDs:
+                if device_id in pci_data.RealtekCardReaderIDs[:5]:
+                    max_version = "23.99.99"                
+            else:
+                max_version = min_version = None
+
+            controller_props["Compatibility"] = (max_version, min_version)
+
+            print("{}- {}: {}".format(" "*3, controller_name, self.show_macos_compatibility(controller_props.get("Compatibility"))))
+
+    def check_compatibility(self, hardware_report):
+        self.hardware_report = hardware_report
+        self.ocl_patched_macos_version = None
+
+        self.utils.head("兼容性检查器")
+        print("")
+        print("正在检查以下设备与 macOS 的兼容性:")
+        print("")
+
+        steps = [
+            ('CPU', self.check_cpu_compatibility),
+            ('GPU', self.check_gpu_compatibility),
+            ('Sound', self.check_sound_compatibility),
+            ('Biometric', self.check_biometric_compatibility),
+            ('Network', self.check_network_compatibility),
+            ('Storage Controllers', self.check_storage_compatibility),
+            ('Bluetooth', self.check_bluetooth_compatibility),
+            ('SD Controller', self.check_sd_controller_compatibility)
+        ]
+
+        index = 0
+        for device_type, function in steps:
+            if self.hardware_report.get(device_type):
+                index += 1
+                print("{}. {}:".format(index, {"CPU": "CPU", "GPU": "GPU", "Sound": "音频", "Biometric": "生物识别", "Network": "网络", "Storage Controllers": "存储控制器", "Bluetooth": "蓝牙", "SD Controller": "SD 控制器"}[device_type]))
+                time.sleep(0.25)
+                function()
+
+        print("")
+        self.utils.request_input()
+
+        return hardware_report, (self.min_native_macos_version, self.max_native_macos_version), self.ocl_patched_macos_version
