@@ -3,6 +3,9 @@
 为什么汉化？  
 不要问为什么，hd4600核显天下第一🐶，现已支持tahoe  
 
+<img width="935" height="628" alt="Screenshot 2026-11-05 103854" src="https://github.com/user-attachments/assets/fa966cd6-01e6-4e8f-9d8b-13c0462dc6a0" />
+
+
 ## 更新说明
 
 ### 20261105
