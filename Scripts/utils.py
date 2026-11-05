@@ -218,7 +218,7 @@ class Utils:
         contacts = {
             "Facebook": "https://www.facebook.com/macforce2601",
             "Telegram": "https://t.me/lzhoang2601",
-            "GitHub": "https://github.com/lzhoang2801/OpCore-Simplify"
+            "GitHub": "https://github.com/ZoomBili/OpCore-Simplify-CN"
         }
         
         for platform, link in contacts.items():

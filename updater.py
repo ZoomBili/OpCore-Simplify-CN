@@ -10,6 +10,11 @@ import shutil
 import zipfile
 
 
+# 自动更新所指向的仓库（汉化版仓库，避免更新后被上游英文版覆盖）
+UPDATE_REPO_OWNER = "ZoomBili"
+UPDATE_REPO_NAME = "OpCore-Simplify-CN"
+
+
 class UpdateRecoveryError(RuntimeError):
     """恢复不完整，应用程序必须停止。"""
 
@@ -76,15 +81,15 @@ class Updater:
 
     def download_update(self, sha, workspace):
         archive_path = workspace / "update.zip"
-        url = "https://github.com/lzhoang2801/OpCore-Simplify/archive/{}.zip".format(
-            sha)
+        url = "https://github.com/{}/{}/archive/{}.zip".format(
+            UPDATE_REPO_OWNER, UPDATE_REPO_NAME, sha)
         self.utils.progress_bar("更新 OpCore Simplify", self.update_steps, 0)
         if not self.fetcher.download_and_save_file(url, str(archive_path)):
             raise RuntimeError("无法下载更新包。")
         staged = workspace / "staged"
         files = {}
         seen = set()
-        prefix = "OpCore-Simplify-{}/".format(sha)
+        prefix = "{}-{}/".format(UPDATE_REPO_NAME, sha)
         self.utils.progress_bar("更新 OpCore Simplify", self.update_steps, 1)
         with zipfile.ZipFile(archive_path) as archive:
             entries = archive.infolist()
@@ -204,7 +209,8 @@ class Updater:
         try:
             current = self.get_current_sha_version()
             print("正在检查更新...")
-            latest = self.github.get_commits("lzhoang2801", "OpCore-Simplify")
+            latest = self.github.get_commits(
+                UPDATE_REPO_OWNER, UPDATE_REPO_NAME)
         except Exception as error:
             print(
                 "\033[1;93m无法检查更新。您可以继续使用已安装的版本。\033[0m")
