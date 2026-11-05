@@ -1,201 +1,275 @@
-from Scripts import resource_fetcher
 from Scripts import github
-from Scripts import run
+from Scripts import resource_fetcher
 from Scripts import utils
+import hashlib
+import json
 import os
-import tempfile
+from pathlib import Path, PurePosixPath
+import re
 import shutil
+import zipfile
+
+
+class UpdateRecoveryError(RuntimeError):
+    """恢复不完整，应用程序必须停止。"""
+
 
 class Updater:
+    update_steps = (
+        "下载更新包",
+        "校验并解压文件",
+        "备份应用程序文件",
+        "安装应用程序文件",
+    )
+
     def __init__(self):
+        self.root = Path(__file__).resolve().parent
         self.github = github.Github()
         self.fetcher = resource_fetcher.ResourceFetcher()
-        self.run = run.Run().run
         self.utils = utils.Utils()
-        self.sha_version = os.path.join(os.path.dirname(os.path.realpath(__file__)), "sha_version.txt")
-        self.download_repo_url = "https://github.com/lzhoang2801/OpCore-Simplify/archive/refs/heads/main.zip"
-        self.temporary_dir = tempfile.mkdtemp()
-        self.current_step = 0
+
+    def is_git_checkout(self):
+        return any(os.path.lexists(parent / ".git") for parent in (self.root, *self.root.parents))
 
     def get_current_sha_version(self):
-        print("正在检查当前版本...")
+        path = self.root / "sha_version.txt"
+        if not path.exists():
+            return None
+        sha = path.read_text(encoding="utf-8").strip()
+        return sha.lower() if re.fullmatch(r"[0-9a-fA-F]{40}", sha) else None
+
+    @staticmethod
+    def _application_path(name):
+        parts = PurePosixPath(name).parts
+        if (not parts or "/".join(parts) != name or re.search(r'[<>:"\\|?*\x00-\x1f]', name)
+                or any(part in (".", "..")
+                       or part.endswith((".", " "))
+                       or re.match(r"(?i)^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(\.|$)", part)
+                       for part in parts)):
+            raise ValueError("不安全的更新路径：{}".format(name))
+        return (len(parts) > 1 and parts[0] == "Scripts"
+                and not any(part.startswith(".") or part in ("__pycache__", "OCK_Files", "Results") for part in parts)
+                or name in ("OpCore-Simplify.py", "OpCore-Simplify.bat", "OpCore-Simplify.command",
+                            "updater.py", "README.md", "LICENSE"))
+
+    def _destination(self, name):
+        path = self.root / name
+        for part in (path, *path.parents):
+            if part == self.root:
+                break
+            if part.is_symlink() or (hasattr(part, "is_junction") and part.is_junction()):
+                raise ValueError("更新目标为链接：{}".format(name))
+        if self.root not in path.resolve().parents:
+            raise ValueError("更新目标位于程序目录之外：{}".format(name))
+        if path.exists() and not path.is_file():
+            raise ValueError(
+                "更新目标不是文件：{}".format(name))
+        return path
+
+    @staticmethod
+    def _hash(path):
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for block in iter(lambda: source.read(65536), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    def download_update(self, sha, workspace):
+        archive_path = workspace / "update.zip"
+        url = "https://github.com/lzhoang2801/OpCore-Simplify/archive/{}.zip".format(
+            sha)
+        self.utils.progress_bar("更新 OpCore Simplify", self.update_steps, 0)
+        if not self.fetcher.download_and_save_file(url, str(archive_path)):
+            raise RuntimeError("无法下载更新包。")
+        staged = workspace / "staged"
+        files = {}
+        seen = set()
+        prefix = "OpCore-Simplify-{}/".format(sha)
+        self.utils.progress_bar("更新 OpCore Simplify", self.update_steps, 1)
+        with zipfile.ZipFile(archive_path) as archive:
+            entries = archive.infolist()
+            if len(entries) > 10000 or sum(entry.file_size for entry in entries) > 512 * 1024 * 1024:
+                raise ValueError("更新包超出支持的大小。")
+            for entry in entries:
+                if entry.orig_filename != entry.filename:
+                    raise ValueError("更新包路径不规范。")
+                if not entry.filename.startswith(prefix):
+                    raise ValueError("更新包根目录异常。")
+                if entry.is_dir():
+                    continue
+                name = entry.filename[len(prefix):]
+                if not self._application_path(name):
+                    continue
+                if (entry.external_attr >> 16) & 0o170000 == 0o120000:
+                    raise ValueError(
+                        "更新包包含符号链接。")
+                if name.casefold() in seen:
+                    raise ValueError("重复的更新路径：{}".format(name))
+                seen.add(name.casefold())
+                target = staged / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(entry) as source, target.open("wb") as destination:
+                    shutil.copyfileobj(source, destination)
+                if name.endswith(".command"):
+                    target.chmod(0o755)
+                files[name] = self._hash(target)
+        for required in ("OpCore-Simplify.py", "updater.py", "Scripts/github.py", "Scripts/utils.py"):
+            if required not in files:
+                raise ValueError(
+                    "更新包不完整：缺少 {}".format(required))
+        return files
+
+    def update_files(self, workspace, sha, files):
+        if self.is_git_checkout():
+            raise RuntimeError(
+                "检测到 Git 检出。请使用 Git 更新此安装。")
+        manifest_name = "update_manifest.json"
+        manifest_path = self._destination(manifest_name)
+        previous = json.loads(manifest_path.read_text(
+            encoding="utf-8")) if manifest_path.exists() else {}
+        if not isinstance(previous, dict):
+            raise ValueError("已安装文件清单无效。")
+        for name, digest in previous.items():
+            if not self._application_path(name) or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError("已安装文件清单条目无效。")
+            path = self._destination(name)
+            if not path.exists() or self._hash(path) != digest:
+                raise ValueError(
+                    "应用程序文件已在本地被修改：{}。请手动更新。".format(name))
+
+        staged = workspace / "staged"
+        (staged / manifest_name).write_text(json.dumps(files, indent=2), encoding="utf-8")
+        (staged / "sha_version.txt").write_text(sha + "\n", encoding="utf-8")
+        names = sorted(set(previous) | set(files)) + \
+            [manifest_name, "sha_version.txt"]
+        backup = workspace / "backup"
+        existed = {}
+        self.utils.progress_bar("更新 OpCore Simplify", self.update_steps, 2)
+        for name in names:
+            path = self._destination(name)
+            if manifest_path.exists() and name in files and name not in previous and path.exists():
+                raise ValueError(
+                    "未受管理的文件将被覆盖：{}。请手动更新。".format(name))
+            existed[name] = path.exists()
+            if path.exists():
+                saved = backup / name
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, saved)
+        (workspace / "original_files.json").write_text(json.dumps(existed,
+                                                                  indent=2), encoding="utf-8")
+        changed = []
         try:
-            current_sha_version = self.utils.read_file(self.sha_version)
-
-            if not current_sha_version:
-                print("缺少 SHA 版本信息。")
-                return "missing_sha_version"
-
-            return current_sha_version.decode()
-        except Exception as e:
-            print("读取当前 SHA 版本时出错：{}".format(str(e)))
-            return "error_reading_sha_version"
-
-    def get_latest_sha_version(self):
-        print("正在从 GitHub 获取最新版本...")
-        try:
-            commits = self.github.get_commits("lzhoang2801", "OpCore-Simplify")
-            return commits["commitGroups"][0]["commits"][0]["oid"]
-        except Exception as e:
-            print("获取最新 SHA 版本时出错：{}".format(str(e)))
-        
-        return None
-
-    def download_update(self):
-        self.current_step += 1
-        print("")
-        print("步骤 {}: 正在创建临时目录...".format(self.current_step))
-        try:
-            self.utils.create_folder(self.temporary_dir)
-            print("  临时目录已创建。")
-            
-            self.current_step += 1
-            print("步骤 {}: 正在下载更新包...".format(self.current_step))
-            print("  ", end="")
-            file_path = os.path.join(self.temporary_dir, os.path.basename(self.download_repo_url))
-            self.fetcher.download_and_save_file(self.download_repo_url, file_path)
-            
-            if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                print("  更新包已下载 ({:.1f} KB)".format(os.path.getsize(file_path)/1024))
-                
-                self.current_step += 1
-                print("步骤 {}: 正在解压文件...".format(self.current_step))
-                self.utils.extract_zip_file(file_path)
-                print("  文件解压成功")
-                return True
-            else:
-                print("  下载失败或文件为空")
-                return False
-        except Exception as e:
-            print("  下载或解压过程中出错：{}".format(str(e)))
-            return False
-
-    def update_files(self):
-        self.current_step += 1
-        print("步骤 {}: 正在更新文件...".format(self.current_step))
-        try:
-            target_dir = os.path.join(self.temporary_dir, "OpCore-Simplify-main")
-            if not os.path.exists(target_dir):
-                target_dir = os.path.join(self.temporary_dir, "main", "OpCore-Simplify-main")
-                
-            if not os.path.exists(target_dir):
-                print("  找不到解压后的文件目录")
-                return False
-                
-            file_paths = self.utils.find_matching_paths(target_dir, type_filter="file")
-            
-            total_files = len(file_paths)
-            print("  找到 {} 个待更新文件".format(total_files))
-            
-            updated_count = 0
-            for index, (path, type) in enumerate(file_paths, start=1):
-                source = os.path.join(target_dir, path)
-                destination = source.replace(target_dir, os.path.dirname(os.path.realpath(__file__)))
-                
-                self.utils.create_folder(os.path.dirname(destination))
-                
-                print("    正在更新 [{}/{}]: {}".format(index, total_files, os.path.basename(path)), end="\r")
-                
+            self.utils.progress_bar(
+                "更新 OpCore Simplify", self.update_steps, 3)
+            for name in names:
+                destination = self._destination(name)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                source = staged / name
+                changed.append(name)
+                if source.exists():
+                    os.replace(source, destination)
+                else:
+                    destination.unlink()
+        except (Exception, KeyboardInterrupt) as error:
+            failures = []
+            for name in reversed(changed):
                 try:
-                    shutil.move(source, destination)
-                    updated_count += 1
-                    
-                    if ".command"  in os.path.splitext(path)[-1] and os.name != "nt":
-                        self.run({
-                            "args": ["chmod", "+x", destination]
-                        })
-                except Exception as e:
-                    print("      更新文件 {} 失败：{}".format(path, str(e)))
-            
-            print("")
-            print("  成功更新 {}/{} 个文件".format(updated_count, total_files))
-            
-            self.current_step += 1
-            print("步骤 {}: 正在清理临时文件...".format(self.current_step))
-            shutil.rmtree(self.temporary_dir)
-            print("  清理完成")
-            
-            return True
-        except Exception as e:
-            print("  更新文件过程中出错：{}".format(str(e)))
-            return False
-
-    def save_latest_sha_version(self, latest_sha):
-        try:
-            self.utils.write_file(self.sha_version, latest_sha.encode())
-            self.current_step += 1
-            print("步骤 {}: 版本信息已更新。".format(self.current_step))
-            return True
-        except Exception as e:
-            print("保存版本信息失败：{}".format(str(e)))
-            return False
+                    destination = self._destination(name)
+                    if existed[name]:
+                        if not destination.exists() or self._hash(destination) != self._hash(backup / name):
+                            shutil.copy2(backup / name, destination)
+                    else:
+                        destination.unlink(missing_ok=True)
+                except (Exception, KeyboardInterrupt) as restore_error:
+                    failures.append("{}: {}".format(name, restore_error))
+            if failures:
+                raise UpdateRecoveryError("回滚未完成。备份和原始文件列表已保留在 {}。{}".format(
+                    workspace, "; ".join(failures))) from error
+            raise RuntimeError(
+                "更新失败；原始文件已恢复：{}".format(error)) from error
 
     def run_update(self):
+        if self.is_git_checkout():
+            return "skipped"
         self.utils.head("检查更新")
         print("")
-        
-        current_sha_version = self.get_current_sha_version()
-        latest_sha_version = self.get_latest_sha_version()
-        
+        workspace = self.root / ".opcore-update"
+        if os.path.lexists(workspace):
+            print(
+                "\033[91m存在未完成的更新，需要先恢复才能继续运行程序。\033[0m")
+            print("  恢复文件：{}".format(workspace))
+            print("")
+            self.utils.request_input("按回车键退出...")
+            return "recovery_required"
+        try:
+            current = self.get_current_sha_version()
+            print("正在检查更新...")
+            latest = self.github.get_commits("lzhoang2801", "OpCore-Simplify")
+        except Exception as error:
+            print(
+                "\033[1;93m无法检查更新。您可以继续使用已安装的版本。\033[0m")
+            print("  {}".format(error))
+            print("")
+            self.utils.request_input()
+            return "failed"
+        sha = latest["sha"]
         print("")
-
-        if latest_sha_version is None:
-            print("无法从 GitHub 验证最新版本。")
-            print("当前脚本 SHA 版本：{}".format(current_sha_version))
-            print("请检查网络连接后重试。")
-            print("")
-            
-            while True:
-                user_input = self.utils.request_input("是否跳过更新过程? (是/否): ").strip().lower()
-                if user_input in ("yes", "y", "是"):
-                    print("")
-                    print("已跳过更新过程。")
-                    return False
-                elif user_input in ("no", "n", "否"):
-                    print("")
-                    print("将使用默认版本检查继续更新...")
-                    latest_sha_version = "update_forced_by_user"
-                    break
-                else:
-                    print("\033[91m选择无效，请重试。\033[0m\n\n")
-        else:
-            print("当前脚本 SHA 版本：{}".format(current_sha_version))
-            print("最新脚本 SHA 版本：{}".format(latest_sha_version))
-        
+        print("  当前版本：{}".format(
+            current[:7] if current else "未知"))
+        print("  最新版本：{}".format(sha[:7]))
         print("")
-        
-        if latest_sha_version != current_sha_version:
-            print("有可用更新!")
-            print("正在从版本 {} 更新到 {}".format(current_sha_version, latest_sha_version))
+        if current == sha:
+            print("您已经在使用最新版本。")
+            return "unchanged"
+        print("\033[1;96m有可用更新。\033[0m" if current else
+              "\033[1;93m无法识别已安装的版本。\033[0m")
+        if not (self.root / "update_manifest.json").exists():
+            print("更新将替换应用程序文件，包括任何本地修改。")
+        print("")
+        created = False
+        keep_backup = False
+        try:
+            workspace.mkdir()
+            created = True
+            files = self.download_update(sha, workspace)
+            self.update_files(workspace, sha, files)
+        except UpdateRecoveryError as error:
+            keep_backup = True
+            self.utils.head("更新失败")
             print("")
-            print("正在开始更新过程...")
-            
-            if not self.download_update():
-                print("")
-                print("  更新失败：无法下载或解压更新包")
-
-                if os.path.exists(self.temporary_dir):
-                    self.current_step += 1
-                    print("步骤 {}: 正在清理临时文件...".format(self.current_step))
-                    shutil.rmtree(self.temporary_dir)
-                    print("  清理完成")
-
-                return False
-                
-            if not self.update_files():
-                print("")
-                print("  更新失败：无法更新文件")
-                return False
-                
-            if not self.save_latest_sha_version(latest_sha_version):
-                print("")
-                print("  更新已完成，但无法保存版本信息")
-            
+            print("\033[91m{}\033[0m".format(error))
             print("")
-            print("更新成功完成!")
+            self.utils.request_input("按回车键退出...")
+            return "recovery_required"
+        except (Exception, KeyboardInterrupt) as error:
+            self.utils.head("更新失败")
             print("")
-            print("程序需要重新启动才能完成更新。")
-            return True
-        else:
-            print("已经是最新版本")
-            return False
+            print("\033[91m更新未安装：{}\033[0m".format(error))
+            print("")
+            if not created and os.path.lexists(workspace):
+                self.utils.request_input("按回车键退出...")
+                return "recovery_required"
+            print("您可以继续使用已安装的版本。")
+            print("")
+            self.utils.request_input()
+            return "failed"
+        finally:
+            if created and not keep_backup:
+                try:
+                    shutil.rmtree(workspace)
+                except OSError as error:
+                    print("无法删除更新工作区 {}：{}".format(
+                        workspace, error))
+        self.utils.progress_bar(
+            "更新 OpCore Simplify", self.update_steps, len(self.update_steps), done=True)
+        print("\033[92m更新成功完成！\033[0m")
+        print("")
+        print("  先前版本：{}".format(
+            current[:7] if current else "未知"))
+        print("  已安装版本：{}".format(sha[:7]))
+        if workspace.exists():
+            print("\033[1;93m无法删除临时更新文件：{}\033[0m".format(
+                workspace))
+        print("")
+        self.utils.request_input("按回车键重启...")
+        return "updated"

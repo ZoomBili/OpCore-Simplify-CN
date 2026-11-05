@@ -113,6 +113,9 @@ class OCPE:
         while True:
             self.u.head("OpenCore Legacy Patcher 警告")
             print("")
+            if self.k.kexts[kext_maestro.kext_data.kext_index_by_name["WhateverXe"]].checked:
+                print(" * WhateverXe 使用 AMFIPass Mod。请使用 https://github.com/b00t0x/OpenCore-Legacy-Patcher 应用所有 OCLP 补丁，包括图形、Wi-Fi 和音频。")
+            print("")
             print("\033[1;96m为什么需要它:\033[0m")
             print("- 恢复 GPU 和 Broadcom WiFi 的兼容性。")
             if is_tahoe:
@@ -131,30 +134,8 @@ class OCPE:
             elif option in ("no", "n", "否"):
                 return False
 
-    def select_macos_version(self, hardware_report, native_macos_version, ocl_patched_macos_version):
-        suggested_macos_version = native_macos_version[1]
+    def select_macos_version(self, native_macos_version, ocl_patched_macos_version, suggested_macos_version):
         version_pattern = re.compile(r'^(\d+)(?:\.(\d+)(?:\.(\d+))?)?$')
-
-        for device_type in ("GPU", "Network", "Bluetooth", "SD Controller"):
-            if device_type in hardware_report:
-                for device_name, device_props in hardware_report[device_type].items():
-                    if device_props.get("Compatibility", (None, None)) != (None, None):
-                        if device_type == "GPU" and device_props.get("Device Type") == "Integrated GPU":
-                            device_id = device_props.get("Device ID", ""*8)[5:]
-
-                            if device_props.get("Manufacturer") == "AMD" or device_id.startswith(("59", "87C0")):
-                                suggested_macos_version = "22.99.99"
-                            elif device_id.startswith(("09", "19")):
-                                suggested_macos_version = "21.99.99"
-
-                        if self.u.parse_darwin_version(suggested_macos_version) > self.u.parse_darwin_version(device_props.get("Compatibility")[0]):
-                            suggested_macos_version = device_props.get("Compatibility")[0]
-
-        while True:
-            if "Beta" in os_data.get_macos_name_by_darwin(suggested_macos_version):
-                suggested_macos_version = "{}{}".format(int(suggested_macos_version[:2]) - 1, suggested_macos_version[2:])
-            else:
-                break
 
         while True:
             self.u.head("选择 macOS 版本")
@@ -399,8 +380,8 @@ class OCPE:
            
             if option == "1":
                 hardware_report_path, hardware_report = self.select_hardware_report()
-                hardware_report, native_macos_version, ocl_patched_macos_version = self.c.check_compatibility(hardware_report)
-                macos_version = self.select_macos_version(hardware_report, native_macos_version, ocl_patched_macos_version)
+                hardware_report, native_macos_version, ocl_patched_macos_version, suggested_macos_version = self.c.check_compatibility(hardware_report)
+                macos_version = self.select_macos_version(native_macos_version, ocl_patched_macos_version, suggested_macos_version)
                 customized_hardware, disabled_devices, needs_oclp = self.h.hardware_customization(hardware_report, macos_version)
                 smbios_model = self.s.select_smbios_model(customized_hardware, macos_version)
                 if not self.ac.ensure_dsdt():
@@ -418,7 +399,7 @@ class OCPE:
                 continue
 
             if option == "2":
-                macos_version = self.select_macos_version(hardware_report, native_macos_version, ocl_patched_macos_version)
+                macos_version = self.select_macos_version(native_macos_version, ocl_patched_macos_version, suggested_macos_version)
                 customized_hardware, disabled_devices, needs_oclp = self.h.hardware_customization(hardware_report, macos_version)
                 smbios_model = self.s.select_smbios_model(customized_hardware, macos_version)
                 needs_oclp = self.k.select_required_kexts(customized_hardware, macos_version, needs_oclp, self.ac.patches)
@@ -432,7 +413,7 @@ class OCPE:
                 self.s.smbios_specific_options(customized_hardware, smbios_model, macos_version, self.ac.patches, self.k)
             elif option == "6":
                 if needs_oclp and not self.show_oclp_warning(macos_version):
-                    macos_version = self.select_macos_version(hardware_report, native_macos_version, ocl_patched_macos_version)
+                    macos_version = self.select_macos_version(native_macos_version, ocl_patched_macos_version, suggested_macos_version)
                     customized_hardware, disabled_devices, needs_oclp = self.h.hardware_customization(hardware_report, macos_version)
                     smbios_model = self.s.select_smbios_model(customized_hardware, macos_version)
                     needs_oclp = self.k.select_required_kexts(customized_hardware, macos_version, needs_oclp, self.ac.patches)
@@ -458,9 +439,11 @@ class OCPE:
                 self.u.request_input("按回车键返回主菜单...")
 
 if __name__ == '__main__':
-    update_flag = updater.Updater().run_update()
-    if update_flag:
-        os.execv(sys.executable, ['python3'] + sys.argv)
+    update_status = updater.Updater().run_update()
+    if update_status == "updated":
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    if update_status == "recovery_required":
+        raise SystemExit("继续运行前需要先完成更新恢复。")
 
     o = OCPE()
     while True:
