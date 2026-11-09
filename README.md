@@ -1,4 +1,4 @@
-[OpCore-Simplify](https://github.com/lzhoang2801/OpCore-Simplify) 最新汉化版，汉化源日期线为20261105  
+[OpCore-Simplify](https://github.com/lzhoang2801/OpCore-Simplify) 最新汉化版，汉化源日期线为20261108  
 部分汉化参考了[OpCore-Simplify-Chinese](https://github.com/firste2026/OpCore-Simplify-Chinese)  项目。  
 为什么汉化？  
 不要问为什么，hd4600核显天下第一🐶，现已支持tahoe  
@@ -7,6 +7,13 @@
 
 
 ## 更新说明
+
+### 20261108
+
+- 同步上游 `eec4cfb`（2026-11-05）→ `9aed67e`（2026-11-08）的全部更新。
+- 修正 C422 芯片组默认 Quirks 判断，补全 HEDT CPU（Gulftown / Bloomfield）识别，`AppleXcpmExtraMsrs` 不再限制 CPU 代号范围。
+- AirPortAtheros40-Tahoe 下载地址更新为 `v1.0.1`。
+- README 汉化源日期线更新为 `20261108`。
 
 ### 20261105
 
