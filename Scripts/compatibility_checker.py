@@ -304,7 +304,7 @@ class CompatibilityChecker:
             if device_id in set(pci_data.EthernetIDs) | set(pci_data.WirelessUSBIDs):
                 device_props["Compatibility"] = (max_version, min_version)
             elif device_id in pci_data.WirelessCardIDs:
-                if device_id in pci_data.AtherosWiFiIDs[:8]:
+                if device_id in pci_data.AtherosWiFiIDs[:8] or device_id in pci_data.rtw89WiFiIDs:
                     device_props["OCLP Compatibility"] = (
                         ocl_patched_max_version, ocl_patched_min_version)
                     self.ocl_patched_macos_version = (ocl_patched_max_version, self.ocl_patched_macos_version[-1] if self.ocl_patched_macos_version and self.utils.parse_darwin_version(
@@ -315,21 +315,6 @@ class CompatibilityChecker:
 
             print("{}- {}: {}".format(" "*3, device_name,
                   self.show_macos_compatibility(device_props.get("Compatibility"))))
-
-            if device_id in pci_data.WirelessCardIDs:
-                if device_id in pci_data.BroadcomWiFiIDs:
-                    print(
-                        "{}- 连续互通支持: \033[1;32m完整\033[0m (AirDrop、接力、通用剪贴板、即时热点等)".format(" "*6))
-                elif device_id in pci_data.IntelWiFiIDs:
-                    print(
-                        "{}- 连续互通支持: \033[1;33m部分\033[0m (使用 AirportItlwm 支持接力和通用剪贴板)".format(" "*6))
-                    print(
-                        "{}\033[1;93m注意:\033[0m AirDrop、通用剪贴板、即时热点等不可用".format(" "*6))
-                elif device_id in pci_data.AtherosWiFiIDs:
-                    print(
-                        "{}- 连续互通支持: \033[1;31m有限\033[0m (无连续互通功能)".format(" "*6))
-                    print(
-                        "{}\033[1;93m注意:\033[0m 不建议在 macOS 中使用 Atheros 网卡".format(" "*6))
 
             if "OCLP Compatibility" in device_props:
                 print("{}- OCLP 兼容性: {}".format(" "*6,

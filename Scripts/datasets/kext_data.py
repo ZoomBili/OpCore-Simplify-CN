@@ -221,7 +221,7 @@ kexts = [
     ),
     KextInfo(
         name="AirportItlwm",
-        description="Intel Wi-Fi 驱动程序，支持原生 macOS Wi-Fi 界面",
+        description="Intel Wi-Fi 驱动，支持原生 macOS Wi-Fi 界面",
         category="Wi-Fi",
         conflict_group_id="IntelWiFi",
         github_repo={
@@ -230,25 +230,25 @@ kexts = [
         }
     ),
     KextInfo(
-        name="AirportItlwm-laobamac",
-        description="Intel Wi-Fi 驱动程序，支持原生 macOS Wi-Fi 界面（Sequoia 15.2+ 及 Tahoe 无需根目录补丁）",
+        name="ForbiddenItlwm",
+        description="Intel Wi-Fi 驱动，支持原生 macOS Wi-Fi 界面与 AWDL",
         category="Wi-Fi",
-        min_darwin_version="24.2.0",
+        min_darwin_version="23.0.0",
         max_darwin_version="25.99.99",
-        allow_force_load=False,
         conflict_group_id="IntelWiFi",
+        allow_force_load=False,
         github_repo={
-            "owner": "laobamac",
-            "repo": "itlwm"
+            "owner": "retropineaple",
+            "repo": "ForbiddenItlwm"
         }
     ),
     KextInfo(
-        name="AirportRTW89",
+        name="AirPort_RTW89",
         description="Realtek RTW89 PCIe Wi-Fi 驱动",
         category="Wi-Fi",
         github_repo={
-            "owner": "achcyano",
-            "repo": "AirportRTW89"
+            "owner": "FranciumOS-org",
+            "repo": "AirPort_RTW89"
         }
     ),
     KextInfo(
@@ -268,7 +268,7 @@ kexts = [
         category="Wi-Fi",
         min_darwin_version="20.0.0",
         github_repo={
-            "owner": "thegwchr",
+            "owner": "JoMei9019-real",
             "repo": "Feixiao"
         }
     ),
@@ -289,6 +289,7 @@ kexts = [
         category="Wi-Fi",
         min_darwin_version="23.0.0",
         requires_kexts=["AMFIPass", "IOSkywalkFamily"],
+        allow_force_load=False,
         download_info={
             "id": 817294638,
             "url": "https://github.com/dortania/OpenCore-Legacy-Patcher/raw/main/payloads/Kexts/Wifi/IO80211FamilyLegacy-v1.0.0.zip"
@@ -301,6 +302,7 @@ kexts = [
         min_darwin_version="23.0.0",
         requires_kexts=["AMFIPass", "IO80211FamilyLegacy"],
         conflict_group_id="Skywalk",
+        allow_force_load=False,
         download_info={
             "id": 926584761,
             "url": "https://github.com/dortania/OpenCore-Legacy-Patcher/raw/main/payloads/Kexts/Wifi/IOSkywalkFamily-v1.2.0.zip"
@@ -322,6 +324,7 @@ kexts = [
         category="Wi-Fi",
         min_darwin_version="23.0.0",
         conflict_group_id="Skywalk",
+        allow_force_load=False,
         github_repo={
             "owner": "laobamac",
             "repo": "SimpleBCM"
@@ -414,10 +417,25 @@ kexts = [
         }
     ),
     KextInfo(
+        name="BTLEAdvFixup",
+        description="为 Intel 蓝牙增加 AWDL 支持",
+        category="Bluetooth",
+        min_darwin_version="23.0.0",
+        max_darwin_version="25.99.99",
+        requires_kexts=["Lilu", "IntelBluetoothFirmware", "ForbiddenItlwm"],
+        conflict_group_id="IntelBTPatcher",
+        allow_force_load=False,
+        github_repo={
+            "owner": "retropineaple",
+            "repo": "ForbiddenItlwm"
+        }
+    ),
+    KextInfo(
         name="IntelBTPatcher",
         description="修复 Intel 蓝牙错误以改善连接性",
         category="Bluetooth",
         requires_kexts=["Lilu", "IntelBluetoothFirmware"],
+        conflict_group_id="IntelBTPatcher",
         github_repo={
             "owner": "lshbluesky",
             "repo": "IntelBluetoothFirmware"

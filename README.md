@@ -1,4 +1,4 @@
-[OpCore-Simplify](https://github.com/lzhoang2801/OpCore-Simplify) 最新汉化版，汉化源日期线为20261108  
+[OpCore-Simplify](https://github.com/lzhoang2801/OpCore-Simplify) 最新汉化版，汉化源日期线为20261120  
 部分汉化参考了[OpCore-Simplify-Chinese](https://github.com/firste2026/OpCore-Simplify-Chinese)  项目。  
 为什么汉化？  
 不要问为什么，hd4600核显天下第一🐶，现已支持tahoe  
@@ -7,6 +7,20 @@
 
 
 ## 更新说明
+
+### 20261120
+
+- 同步上游 `9aed67e`（2026-11-08）→ `6241330`（2026-11-20）的全部更新。
+- 音频选择改为自动：AppleALC 默认选中，Tahoe 且无需 OCLP 时自动追加 SimpleHDA，不再需要交互选择。
+- Broadcom Wi-Fi 选择改为自动：仅在需要 OCLP 时启用 IOSkywalkFamily（Tahoe 追加 AirPortBrcmNIC-Tahoe），不再提示选择 SimpleBCM。
+- Intel Wi-Fi 原生驱动由 `AirportItlwm-laobamac` 更换为 `ForbiddenItlwm`，并新增配套 `BTLEAdvFixup`（Intel 蓝牙 AWDL）；Feixiao 改用 `JoMei9019-real` 分支。
+- Realtek Wi-Fi 驱动 `AirportRTW89` 更换为 FranciumOS 的 `AirPort_RTW89`，同步 RTW89 网卡 ID 列表，移除旧内核补丁。
+- IntelBluetoothFirmware 改为从 GitHub Releases 获取。
+- 固定使用 OpenCorePkg 1.0.9（含混合 CPU 拓扑修复）。
+- 同步 AppleALC 1.9.9 的 codec layout 列表。
+- 移除 AMD Navi 显卡选择 Intel 核显时的 NootRX 提示暂停。
+- 蓝牙 kext 选择逻辑提前到网络设备之前执行。
+- README 汉化源日期线更新为 `20261120`。
 
 ### 20261108
 

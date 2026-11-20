@@ -183,30 +183,9 @@ class KextMaestro:
             selected_kexts.append("RestrictEvents")
 
         if any(codec_properties.get("Device ID") in codec_layouts.data for codec_properties in hardware_report.get("Sound", {}).values()):
-            if self.utils.parse_darwin_version(macos_version) >= self.utils.parse_darwin_version("25.0.0"):
-                print(
-                    "\n\033[1;93m注意:\033[0m macOS Tahoe 不再包含 AppleHDA。AppleALC 需要以下其中一种恢复方法。")
-                print("")
-                print(
-                    "1. \033[1mAppleALC + SimpleHDA\033[0m - 通过 OpenCore 注入，无需音频根补丁")
-                print(
-                    "2. \033[1mAppleALC + OCLP\033[0m - 通过系统根补丁恢复 AppleHDA")
-                print("")
-                while True:
-                    kext_option = self.utils.request_input(
-                        "请为系统选择音频 kext: ").strip()
-                    if kext_option == "1":
-                        selected_kexts.extend(("AppleALC", "SimpleHDA"))
-                        break
-                    elif kext_option == "2":
-                        needs_oclp = True
-                        selected_kexts.append("AppleALC")
-                        break
-                    else:
-                        print(
-                            "\033[91m选择无效，请重试。\033[0m\n\n")
-            else:
-                selected_kexts.append("AppleALC")
+            selected_kexts.append("AppleALC")
+            if self.utils.parse_darwin_version(macos_version) >= self.utils.parse_darwin_version("25.0.0") and not needs_oclp:
+                selected_kexts.append("SimpleHDA")
 
         if "AMD" in hardware_report.get("CPU").get("Manufacturer") and self.utils.parse_darwin_version(macos_version) >= self.utils.parse_darwin_version("21.4.0") or \
                 int(hardware_report.get("CPU").get("CPU Count")) > 1 and self.utils.parse_darwin_version(macos_version) >= self.utils.parse_darwin_version("19.0.0") or \
@@ -225,31 +204,30 @@ class KextMaestro:
         if self.is_intel_hedt_cpu(hardware_report.get("CPU").get("Processor Name"), hardware_report.get("CPU").get("Codename")):
             selected_kexts.append("CpuTscSync")
 
+        for bluetooth_name, bluetooth_props in hardware_report.get("Bluetooth", {}).items():
+            usb_id = bluetooth_props.get("Device ID")
+
+            if usb_id in pci_data.AtherosBluetoothIDs:
+                selected_kexts.extend(("Ath3kBT", "Ath3kBTInjector"))
+            elif usb_id in pci_data.BroadcomBluetoothIDs:
+                selected_kexts.extend(("BrcmFirmwareData", "BrcmPatchRAM2",
+                                      "BrcmPatchRAM3", "BrcmBluetoothInjector", "BlueToolFixup"))
+            elif usb_id in pci_data.IntelBluetoothIDs:
+                selected_kexts.extend(
+                    ("IntelBluetoothFirmware", "IntelBTPatcher", "IntelBluetoothInjector", "BlueToolFixup"))
+            elif usb_id in pci_data.RealtekBluetoothIDs:
+                selected_kexts.extend(
+                    ("RealtekBluetoothFirmware", "BlueToolFixup"))
+            elif usb_id in pci_data.BluetoothIDs[-1]:
+                selected_kexts.append("BlueToolFixup")
+
         for network_name, network_props in hardware_report.get("Network", {}).items():
             device_id = network_props.get("Device ID")
 
-            if device_id in pci_data.BroadcomWiFiIDs and self.utils.parse_darwin_version(macos_version) >= self.utils.parse_darwin_version("23.0.0"):
-                print("\n*** 已检测到 {} 为 Broadcom WiFi 设备。".format(network_name))
-                print("")
-                print(
-                    "1. \033[1mSimpleBCM\033[0m - 使用原生 Skywalk，无需 Wi-Fi 根补丁")
-                print(
-                    "2. \033[1mIOSkywalkFamily + OCLP\033[0m - 降级 Skywalk，需要 Wi-Fi 根补丁")
-                print("")
-                wifi_options = ["SimpleBCM", "IOSkywalkFamily"]
-                recommended_option = 1
-                choice = self.utils.request_input("请选择 Broadcom Wi-Fi kext (默认: {}): ".format(
-                    wifi_options[recommended_option - 1])).strip() or str(recommended_option)
-                if not choice.isdigit() or not 1 <= int(choice) <= len(wifi_options):
-                    print("选择无效，已使用推荐选项: {}".format(
-                        recommended_option))
-                    choice = str(recommended_option)
-                selected_name = wifi_options[int(choice) - 1]
-                selected_kexts.append(selected_name)
-                if selected_name == "IOSkywalkFamily":
-                    needs_oclp = True
-                    if self.utils.parse_darwin_version(macos_version) >= self.utils.parse_darwin_version("25.0.0"):
-                        selected_kexts.append("AirPortBrcmNIC-Tahoe")
+            if device_id in pci_data.BroadcomWiFiIDs and self.utils.parse_darwin_version(macos_version) >= self.utils.parse_darwin_version("23.0.0") and needs_oclp:
+                selected_kexts.append("IOSkywalkFamily")
+                if self.utils.parse_darwin_version(macos_version) >= self.utils.parse_darwin_version("25.0.0"):
+                    selected_kexts.append("AirPortBrcmNIC-Tahoe")
 
             if device_id in pci_data.BroadcomWiFiIDs[:15]:
                 selected_kexts.append("AirportBrcmFixup")
@@ -263,14 +241,16 @@ class KextMaestro:
                 darwin_major = self.utils.parse_darwin_version(macos_version)[
                     0]
                 native_fork_available = self.is_kext_compatible(
-                    self.kexts[kext_data.kext_index_by_name["AirportItlwm-laobamac"]], macos_version)
+                    self.kexts[kext_data.kext_index_by_name["ForbiddenItlwm"]], macos_version)
                 wifi_options = ["AirportItlwm", "itlwm"]
                 if native_fork_available:
-                    wifi_options.insert(0, "AirportItlwm-laobamac")
-                print("\033[1;93m注意:\033[0m Intel WiFi 设备有 {} 个可用的 kext 选项:".format(len(wifi_options)))
+                    wifi_options.insert(0, "ForbiddenItlwm")
+                print("\033[1;93m注意:\033[0m Intel WiFi 设备有 {} 个可用的 kext 选项:".format(
+                    len(wifi_options)))
                 print("")
                 if native_fork_available:
-                    print("1. \033[1mlaobamac AirportItlwm\033[0m - 在 Sequoia 15.2+ 和 Tahoe 上使用原生 WiFi，无需 OCLP 根补丁")
+                    print(
+                        "1. \033[1mForbiddenItlwm\033[0m - AirportItlwm 的分支，增加 AWDL 支持")
                     print("")
                 print("{}. \033[1mAirportItlwm\033[0m - 使用原生 WiFi 设置菜单".format(2 if native_fork_available else 1))
                 print("   • 支持接力、通用剪贴板、定位服务和即时热点")
@@ -294,7 +274,9 @@ class KextMaestro:
                         choice = str(recommended_option)
                     selected_name = wifi_options[int(choice) - 1]
                 selected_kexts.append(selected_name)
-                if selected_name == "AirportItlwm" and darwin_major >= 24:
+                if selected_name == "ForbiddenItlwm":
+                    selected_kexts.append("BTLEAdvFixup")
+                elif selected_name == "AirportItlwm" and darwin_major >= 24:
                     needs_oclp = True
                     selected_kexts.append("IOSkywalkFamily")
             elif device_id in pci_data.AtherosWiFiIDs[:8]:
@@ -306,7 +288,7 @@ class KextMaestro:
             elif device_id in pci_data.rtw88WiFiIDs:
                 selected_kexts.append("Feixiao")
             elif device_id in pci_data.rtw89WiFiIDs:
-                selected_kexts.append("AirportRTW89")
+                selected_kexts.append("AirPort_RTW89")
                 if self.utils.parse_darwin_version(macos_version) >= self.utils.parse_darwin_version("23.0.0"):
                     needs_oclp = True
                     selected_kexts.append("IOSkywalkFamily")
@@ -331,23 +313,6 @@ class KextMaestro:
 
         if all(network_props.get("Bus Type") == "USB" for network_props in hardware_report.get("Network", {}).values()):
             selected_kexts.append("NullEthernet")
-
-        for bluetooth_name, bluetooth_props in hardware_report.get("Bluetooth", {}).items():
-            usb_id = bluetooth_props.get("Device ID")
-
-            if usb_id in pci_data.AtherosBluetoothIDs:
-                selected_kexts.extend(("Ath3kBT", "Ath3kBTInjector"))
-            elif usb_id in pci_data.BroadcomBluetoothIDs:
-                selected_kexts.extend(("BrcmFirmwareData", "BrcmPatchRAM2",
-                                      "BrcmPatchRAM3", "BrcmBluetoothInjector", "BlueToolFixup"))
-            elif usb_id in pci_data.IntelBluetoothIDs:
-                selected_kexts.extend(
-                    ("IntelBluetoothFirmware", "IntelBTPatcher", "IntelBluetoothInjector", "BlueToolFixup"))
-            elif usb_id in pci_data.RealtekBluetoothIDs:
-                selected_kexts.extend(
-                    ("RealtekBluetoothFirmware", "BlueToolFixup"))
-            elif usb_id in pci_data.BluetoothIDs[-1]:
-                selected_kexts.append("BlueToolFixup")
 
         if "Laptop" in hardware_report.get("Motherboard").get("Platform"):
             if "SURFACE" in hardware_report.get("Motherboard").get("Name"):
@@ -499,12 +464,6 @@ class KextMaestro:
                     print("")
 
                     if any(other_gpu_props.get("Manufacturer") == "Intel" for other_gpu_props in hardware_report.get("GPU", {}).values()):
-                        print(
-                            "\033[91m重要提示:\033[0m NootRX kext 与 Intel GPU 不兼容")
-                        print(
-                            "为了兼容 Intel GPU，已自动选择 WhateverGreen kext")
-                        print("")
-                        self.utils.request_input("按回车键继续...")
                         continue
 
                     kext_option = self.utils.request_input("请为 AMD {} GPU 选择 kext (默认: {}): ".format(
@@ -676,8 +635,7 @@ class KextMaestro:
             bundle["MaxKernel"] = os_data.get_latest_darwin_version()
             bundle["MinKernel"] = os_data.get_lowest_darwin_version()
 
-            registry_name = {"rtw88": "Feixiao", "AirportRTW": "AirportRTW89"}.get(
-                kext_name, kext_name)
+            registry_name = {"rtw88": "Feixiao"}.get(kext_name, kext_name)
             selected_kext = next((kext for kext in self.kexts if kext.checked and
                                   (kext.name == registry_name or kext.name.startswith(registry_name + "-"))), None)
             if selected_kext is not None:
@@ -703,7 +661,7 @@ class KextMaestro:
 
             if kext_name == "AirPortBrcm4360_Injector":
                 bundle["MaxKernel"] = "19.99.99"
-            elif kext_name == "AirportItlwm":
+            elif kext_name in {"AirportItlwm", "ForbiddenItlwm", "BTLEAdvFixup"}:
                 bundle["MaxKernel"] = macos_version[:2] + \
                     bundle["MaxKernel"][2:]
                 if self.utils.parse_darwin_version(bundle["MinKernel"]) < self.utils.parse_darwin_version(macos_version[:2] + ".0.0"):

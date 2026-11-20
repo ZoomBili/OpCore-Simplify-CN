@@ -565,23 +565,26 @@ rtw88WiFiIDs = [
     "10EC-C821",
     "10EC-8812",
     "10EC-8813",
-    "0BDA-8300",
-    "0BDA-B812",
-    "0BDA-C812",
-    "0BDA-8812"
+    "0BDA-8314",
+    "0BDA-B902",
+    "0BDA-C722",
+    "0BDA-8814"
 ]
 
 rtw89WiFiIDs = [
-    # AirportRTW.kext
-    "10EC-8852",
-    "10EC-8922",
-    "10EC-892B",
-    "10EC-A85A",
-    "10EC-B520",
+    # AirPort_RTW89.kext
     "10EC-B851",
+    "10EC-8852",
+    "10EC-A85A",
     "10EC-B852",
     "10EC-B85B",
+    "10EC-B520",
     "10EC-C852",
+    "10EC-8922",
+    "10EC-892B",
+    "10EC-892D",
+    "10EC-882D",
+    "10EC-895D"
 ]
 
 WirelessCardIDs = AtherosWiFiIDs + BroadcomWiFiIDs + \
